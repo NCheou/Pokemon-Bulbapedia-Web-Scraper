@@ -1,0 +1,124 @@
+#imports requests.get, beautiful soup, manipulating csvs, os for current path, and re for regular expressions
+import requests
+import bs4
+import csv
+import os
+import re
+
+#establishes a base URL that we then append new pokemon links to. 
+rootURL = "https://bulbapedia.bulbagarden.net"
+#The indexURL starts at Miraidon that's the most recent pokemon, so after this it loops back to Bulbasaur. 
+indexURL = rootURL + '/wiki/Miraidon_(Pokémon)'
+#Creates an empty list to append pokemon stats to.
+allPokemonData = []
+
+currentPath = os.getcwd()
+
+#This is the location of the CSV we are writing to. Currently, it requires an existing CSV named Pokemonstats 
+#As it was easier to do.
+csv_file = currentPath + '\Pokemonstats.csv'
+
+#These are the names of the columsn in the CSV
+csv_columns = ['National Dex Number', 'Name', 'Type 1', 'Type 2', 'HP', 'Attack', 'Defense', 'Sp. Attack', 'Sp. Defense', 'Speed', 'Stat Total', 'Weight (kg)', 'Height (m)', 'Generation']
+
+#This creates a function to get the URL for the next pokemon. It finds 'Name_(Pokemon)' and appends it to the
+#rootURL to create a the URL for the next pokemon. It does this 1006 times as that's how many pokemon there are. 
+#It would need to be updated when new pokemon are released. 
+#We use yield here because if you use return, it breaks a while loop.
+def getPokemonURLs():
+    soup = bs4.BeautifulSoup(requests.get(indexURL).content, 'html.parser')
+    next_pokemon_url_table = soup.find_all('td', style='text-align: left')[0].find('a', href=True)['href']
+    #new_URL = next_pokemon_url_table[0].find('a', href=True)['href']
+    next_pokemon_url = "https://bulbapedia.bulbagarden.net" + next_pokemon_url_table
+    count = 0    
+    yield(next_pokemon_url)
+    while count <1007:
+        next_pokemon_url_table = bs4.BeautifulSoup(requests.get(next_pokemon_url).content, 'html.parser').find_all('td', style='text-align: left')[0].find('a', href=True)['href']
+        #new_URL = next_pokemon_url_table[0].find('a', href=True)['href'][0].find('a', href=True)['href']
+        next_pokemon_url = "https://bulbapedia.bulbagarden.net" + next_pokemon_url_table
+        yield(next_pokemon_url)
+        count += 1
+  
+  
+#This takes a pokemon URL and scrapes all the data we want. We start with a list consisting of 14 zeroes, then we 
+#replace each zero with the info we want.
+def getPokemonData(inputURL):
+    pokemonData = [0]*14 
+    #htmlData    = requests.get( rootURL + inputURL)
+    #this line seems to do https://bulbapedia.bulbagarden.net + https://bulbapedia.bulbagarden.net/wiki/Ivysaur_(Pokémon). 
+    #we want only the full link
+    htmlData  = requests.get(inputURL)
+    soup      = bs4.BeautifulSoup(htmlData.text, "html.parser" )
+    #These next two lines are for finding the generation of the pokemon
+    name_soup = soup.select('ul li span a[class*="external text"]')
+    name_soup = bs4.BeautifulSoup(str(name_soup)).get_text()
+    
+    #This looks for the national dex number. Unfortunately at this time, the national dex numbers for 
+    #generation 9 have not been updated yet, so they were manually put in.
+    pokemonData[0] = soup.th.big.a.span.text
+    
+    #This returns the name of the pokemon, and gets rid of all special characters.
+    #Nidoran gave me issues because its name has a gender symbol in it, and I couldn't
+    #write that symbol to a csv
+    pokemonData[1] = re.sub(r"[^a-zA-Z0-9 ]", "", (soup.select('h1#firstHeading')[0].get_text())[:-10])
+    
+    #This looks for the a class that contains the type and gets the first element
+    pokemonData[2] = soup.select('td a[href*="(type)"] span b')[0].get_text()
+    
+    #Some pokemon have two typings, so what this does is it gets [1] and if the
+    #pokemon doesn't have a second type, it will return 'Unknown'. If it returns
+    #that, it will copy the mono type over to the Type 2 column. 
+    if soup.select('a[href*="(type)"] span b')[1].get_text() != 'Unknown':
+        pokemonData[3] = soup.select('td[width = "45px"] a[href*="(type)"] span b')[1].get_text()
+    if soup.select('a[href*="(type)"] span b')[1].get_text() == 'Unknown':
+        pokemonData[3] = soup.select('td a[href*="(type)"] span b')[0].get_text()
+    #This finds the div class with style 'float:right' which only appears on the base stats table
+    #The first element corresponds to HP, Attack, etc and then transforms it into an integer
+    pokemonData[4] = (int)(soup.find_all('div', attrs={'style':'float:right'})[0].get_text())
+    pokemonData[5] = (int)(soup.find_all('div', attrs={'style':'float:right'})[1].get_text())
+    pokemonData[6] = (int)(soup.find_all('div', attrs={'style':'float:right'})[2].get_text())
+    pokemonData[7] = (int)(soup.find_all('div', attrs={'style':'float:right'})[3].get_text())
+    pokemonData[8] = (int)(soup.find_all('div', attrs={'style':'float:right'})[4].get_text())
+    pokemonData[9] = (int)(soup.find_all('div', attrs={'style':'float:right'})[5].get_text())
+    pokemonData[10] = (int)(soup.find_all('div', attrs={'style':'float:right'})[6].get_text())
+    
+    #This looks for the weight of the pokemon in kilograms. It does this by finding the a href title:Weight
+    #Then going up two levels with .parent.parent. then it finds the first 'td' under it, which contains 
+    #two elements. [0] is in pounds, [1] is in kg. I chose to .split() to get only the float
+    #because otherwise it would report 1 kg instead of just 1.
+    pokemonData[11] = (float)(soup.find('a', {'title': 'Weight'}).parent.parent.find_all('td')[1].get_text().split()[0])
+    pokemonData[12] = (float)(soup.find('a', {'title': 'List of Pokémon by height'}).parent.parent.find_all('td')[1].get_text().split()[0])
+    #This line finds the generation by going to the list of generations the pokemon appears in and finding the first one
+    #For some reason, the wiki uses a different format for generations 8 and 9, so this doesn't get the generation
+    #for those pokemon. Those were input manually, but it's fairly easy. 
+    pokemonData[13] = name_soup[:-1][1:].split(',')[0]
+    
+    allPokemonData.append(pokemonData)
+    #print(allPokemonData)
+    
+#this takes the list of pokemon URLs generated and scrapes the stats from the first URL
+#then iterates through the rest of them until it's finished. 
+def allPokemonStats():
+    pokemonURLs = getPokemonURLs()
+    #counter = 0
+    #while counter < 1007:    
+    for pokemonURL in pokemonURLs:
+        getPokemonData(pokemonURL)
+        #counter += 1
+    #print(allPokemonData)
+    print('Done')
+
+#This writes to an existing CSV
+def WriteListToCSV(csv_file, csv_columns, data_list):
+    with open(csv_file, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(csv_columns) #include if you want to have the csv column names too
+        for data in data_list:
+            writer.writerow(data)
+    return
+
+#Executes the pokemon stats function
+allPokemonStats()
+
+#Executes CSV function
+WriteListToCSV( csv_file, csv_columns, allPokemonData )
